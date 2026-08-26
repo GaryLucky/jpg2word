@@ -9,7 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 DEFAULT_SOURCE_DIR = r"C:\Users\Gary\Desktop\9、访问何长工同志谈话记录87"
-DEFAULT_OUTPUT_DIR = r"C:\Users\Gary\Desktop\jpg2word\output"
+DEFAULT_OUTPUT_DIR = r"C:\Users\Gary\Desktop\jpg2word\jpg_files"
 DEFAULT_MODEL = "doubao-seed-2-1-pro-260628"
 DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 
@@ -131,7 +131,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-retries", type=int, default=3, help="每批失败后的最大重试次数。")
     parser.add_argument("--timeout", type=int, default=300, help="每次模型调用超时时间，单位秒，默认 300。")
     parser.add_argument("--max-tokens", type=int, default=8192, help="每批最大输出 token 数，默认 8192。")
-    parser.add_argument("--limit", type=int, default=0, help="只处理前 N 张图片，默认 0 表示处理全部。")
+    parser.add_argument("--limit", type=int, default=15, help="只处理前 N 张图片，默认 0 表示处理全部。")
     parser.add_argument("--force", action="store_true", help="重新生成已存在的 batch_*.md。")
     parser.add_argument("--merge-only", action="store_true", help="只合并现有 chunks，不调用模型。")
     parser.add_argument("--dry-run", action="store_true", help="只检查图片排序和分批，不调用模型。")
