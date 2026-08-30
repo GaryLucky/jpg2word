@@ -4,8 +4,6 @@ from pathlib import Path
 import jpg_to_md
 from md2word import markdown_to_docx
 
-
-
 DEFAULT_SOURCE_DIR = r"C:\Users\Gary\Desktop\jpg2word\jpg_files\扫描4\176、#何长工回忆：马日事变和进军井冈山"
 
 
