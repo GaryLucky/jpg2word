@@ -104,7 +104,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="输出目录。源目录没有子目录时可指定；有子目录时固定使用每个子目录下的 output。")
     parser.add_argument("--model", default=jpg_to_md.DEFAULT_MODEL, help="视觉模型名称。")
     parser.add_argument("--base-url", default=jpg_to_md.DEFAULT_BASE_URL, help="Ark OpenAI 兼容 API 地址。")
-    parser.add_argument("--batch-size", type=int, default=3, help="每批 OCR 图片数量，默认 5。")
+    parser.add_argument("--batch-size", type=int, default=3, help="每批 OCR 图片数量，默认 3。")
     parser.add_argument("--limit", type=int, default=0, help="只处理前 N 张图片，默认 0 表示处理全部。")
     parser.add_argument("--force", action="store_true", help="重新生成已存在的 OCR 分块。")
     parser.add_argument("--merge-only", action="store_true", help="只合并已有 OCR 分块并导出 Word。")
