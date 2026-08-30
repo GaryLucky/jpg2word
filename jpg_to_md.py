@@ -50,14 +50,17 @@ def build_prompt(batch: list[Path], start_index: int) -> str:
         page_lines.append(f"- 第 {start_index + offset} 页：文件名 {path.name}")
 
     return (
-        "你是一名严谨的中文手写史料 OCR 整理员。请按图片顺序逐页识别手写内容，输出 Markdown。\n\n"
+        "你是一名严谨的中文手写史料 OCR 整理员。请按图片顺序逐页识别档案图片中的文字，输出 Markdown。\n\n"
         "要求：\n"
-        "1. 必须逐页输出，每页以二级标题开头：## 第N页（文件名）\n"
+        "1. 必须逐页输出,每页开头不需要标注第几页\n"
         "2. 尽量忠实转写原文，保留原有段落、换行、标点、人物名、日期和数字。\n"
         "3. 不要改写、总结或润色原文。\n"
         "4. 难以辨认的字用 [?] 标记；推测但不确定的字词用 （疑为：...）标记。\n"
-        "5. 页面之间用单独一行 --- 分隔。\n"
-        "6. 只输出 Markdown 正文，不要输出解释。\n\n"
+        f"5. 每一个图片占领每一页，每一个页面结尾输出换行和 ---。本批必须输出 {len(batch)} 个单独成行的 ---。\n"
+        "6. 只输出 Markdown 正文，不要解释，不要分析，不要输出思考过程。\n\n"
+        "7. 遇到分段问题要注意是否原图片文本下一段有空两格，空两格一般都要分段没空就尽量不使用换行，不能跟着原图片的换行而换行。\n"
+        "8. md文件中的文字内容不使用任何特殊符号。\n"
+        "9. 切记不能将两张图片的内容合并。\n"
         "本批页面：\n"
         + "\n".join(page_lines)
     )
@@ -75,6 +78,7 @@ def call_ocr(
     max_retries: int,
     timeout: int,
     max_tokens: int,
+    reasoning_effort: str,
 ) -> str:
     content = [{"type": "text", "text": build_prompt(batch, start_index)}]
     for path in batch:
@@ -88,11 +92,17 @@ def call_ocr(
                 messages=[{"role": "user", "content": content}],
                 timeout=timeout,
                 max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
             )
-            text = response.choices[0].message.content
+            choice = response.choices[0]
+            text = choice.message.content
             if text:
                 return text.strip()
-            return str(response)
+            return (
+                "模型没有返回正文。\n\n"
+                f"finish_reason: {choice.finish_reason}\n\n"
+                f"raw_response:\n{response}"
+            )
         except Exception as exc:
             last_error = exc
             if attempt == max_retries:
@@ -111,17 +121,52 @@ def write_manifest(output_dir: Path, images: list[Path]) -> None:
     manifest_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def merge_chunks(chunks_dir: Path, final_path: Path) -> None:
+def count_page_separators(text: str) -> int:
+    return sum(1 for line in text.splitlines() if line.strip() == "---")
+
+
+def validate_chunk_separator_count(chunk_path: Path, expected_count: int) -> bool:
+    if not chunk_path.exists():
+        return False
+
+    text = chunk_path.read_text(encoding="utf-8")
+    actual_count = count_page_separators(text)
+    if actual_count == expected_count:
+        return True
+
+    log(f"分隔符数量不对：{chunk_path.name}，应为 {expected_count} 个 ---，实际 {actual_count} 个。")
+    return False
+
+
+def placeholder_chunk_text(batch: list[Path]) -> str:
+    page_texts = []
+    for _ in batch:
+        page_texts.append("内容涉及敏感内容或字迹太难辨别\n---")
+    return "\n".join(page_texts)
+
+
+def write_placeholder_chunk(chunk_path: Path, batch: list[Path]) -> None:
+    chunk_path.write_text(placeholder_chunk_text(batch).strip() + "\n", encoding="utf-8")
+    log(f"已写入占位内容：{chunk_path.name}")
+
+
+def merge_chunks(chunks_dir: Path, final_path: Path) -> bool:
     chunk_files = sorted(chunks_dir.glob("batch_*.md"))
+    if not chunk_files:
+        return False
+
     merged_parts = []
     for chunk_file in chunk_files:
         text = chunk_file.read_text(encoding="utf-8").strip()
+        text = re.sub(r"^(?:---\s*)+", "", text).strip()
+        text = re.sub(r"(?:\s*---)+$", "", text).strip()
         if text:
             merged_parts.append(text)
     final_path.write_text("\n\n---\n\n".join(merged_parts).strip() + "\n", encoding="utf-8")
+    return True
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="按文件名编号批量识别 JPG 手写页，并合并为 Markdown。")
     parser.add_argument("--source-dir", default=DEFAULT_SOURCE_DIR, help="JPG 源目录，默认读取桌面谈话记录目录。")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="输出目录。")
@@ -131,15 +176,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-retries", type=int, default=3, help="每批失败后的最大重试次数。")
     parser.add_argument("--timeout", type=int, default=300, help="每次模型调用超时时间，单位秒，默认 300。")
     parser.add_argument("--max-tokens", type=int, default=8192, help="每批最大输出 token 数，默认 8192。")
-    parser.add_argument("--limit", type=int, default=15, help="只处理前 N 张图片，默认 0 表示处理全部。")
+    parser.add_argument(
+        "--reasoning-effort",
+        default="minimal",
+        choices=["minimal", "low", "medium", "high"],
+        help="推理深度，默认 minimal，表示尽量不深度思考。",
+    )
+    parser.add_argument("--limit", type=int, default=0, help="只处理前 N 张图片，默认 0 表示处理全部。")
     parser.add_argument("--force", action="store_true", help="重新生成已存在的 batch_*.md。")
     parser.add_argument("--merge-only", action="store_true", help="只合并现有 chunks，不调用模型。")
     parser.add_argument("--dry-run", action="store_true", help="只检查图片排序和分批，不调用模型。")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
 
     load_dotenv(Path(__file__).resolve().with_name(".env"))
 
@@ -177,8 +228,13 @@ def main() -> int:
         return 0
 
     if args.merge_only:
-        merge_chunks(chunks_dir, final_path)
-        log(f"已合并：{final_path}")
+        if merge_chunks(chunks_dir, final_path):
+            log(f"已合并：{final_path}")
+        elif final_path.exists() and final_path.read_text(encoding="utf-8").strip():
+            log(f"没有找到分块文件，保留已有 Markdown：{final_path}")
+        else:
+            print(f"没有找到可合并的分块文件：{chunks_dir}", file=sys.stderr)
+            return 1
         return 0
 
     api_key = os.getenv("OPENAI_API_KEY") or os.getenv("ARK_API_KEY")
@@ -202,23 +258,45 @@ def main() -> int:
         last_num = page_number(batch[-1], end_index)
         chunk_path = chunks_dir / f"batch_{batch_no:03d}_pages_{first_num}-{last_num}.md"
 
-        if chunk_path.exists() and not args.force:
-            log(f"[{batch_no}/{total_batches}] 跳过已存在：{chunk_path.name}")
-            continue
-
         names = ", ".join(path.name for path in batch)
-        log(f"[{batch_no}/{total_batches}] OCR 第 {start_index}-{end_index} 页：{names}")
-        text = call_ocr(
-            client,
-            args.model,
-            batch,
-            start_index,
-            args.max_retries,
-            args.timeout,
-            args.max_tokens,
-        )
-        chunk_path.write_text(text.strip() + "\n", encoding="utf-8")
-        log(f"已保存：{chunk_path.name}")
+        expected_separator_count = len(batch)
+
+        if chunk_path.exists() and not args.force:
+            if validate_chunk_separator_count(chunk_path, expected_separator_count):
+                log(f"[{batch_no}/{total_batches}] 跳过已存在且检查通过：{chunk_path.name}")
+                continue
+            chunk_path.unlink()
+            log(f"已删除异常批次，准备重新 OCR：{chunk_path.name}")
+
+        for ocr_round in range(1, 3):
+            round_label = "OCR" if ocr_round == 1 else "重新 OCR"
+            log(f"[{batch_no}/{total_batches}] {round_label} 第 {start_index}-{end_index} 页：{names}")
+            try:
+                text = call_ocr(
+                    client,
+                    args.model,
+                    batch,
+                    start_index,
+                    args.max_retries,
+                    args.timeout,
+                    args.max_tokens,
+                    args.reasoning_effort,
+                )
+            except Exception as exc:
+                log(f"{round_label} 调用失败：{exc}")
+                text = ""
+            chunk_path.write_text(text.strip() + "\n", encoding="utf-8")
+            log(f"已保存：{chunk_path.name}")
+
+            if validate_chunk_separator_count(chunk_path, expected_separator_count):
+                break
+
+            chunk_path.unlink(missing_ok=True)
+            if ocr_round == 2:
+                log(f"{chunk_path.name} 重跑后仍不可用，改用占位内容。")
+                write_placeholder_chunk(chunk_path, batch)
+                break
+            log(f"已删除异常批次，将重新跑一次：{chunk_path.name}")
 
         merge_chunks(chunks_dir, final_path)
         log(f"已更新合并文件：{final_path}")
